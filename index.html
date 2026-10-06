@@ -321,20 +321,60 @@ $('wealthSvg').addEventListener('pointermove',e=>{
  $('hoverInfo').textContent='Percentil '+num(p*100,5)+' %'+name+' · čisté jmění '+money(point.w,3)+' · daň '+money(point.tax)+' · po dani '+money(point.w-point.tax);
 });
 $('wealthSvg').addEventListener('pointerleave',()=>{$('hoverMarker')?.setAttribute('hidden','');});
+// Consume individual dots top-to-bottom, then move one column to the left.
+function dotTaxAmounts(wealth,tax,columns){
+ const count=Math.ceil(wealth-1e-12),amounts=Array(count).fill(0);
+ let outstanding=clamp(tax,0,wealth);
+ for(let column=Math.min(columns,count)-1;column>=0&&outstanding>0;column--){
+  for(let index=column;index<count&&outstanding>0;index+=columns){
+   const own=clamp(wealth-index,0,1),taken=Math.min(outstanding,own);
+   amounts[index]=taken;
+   outstanding=Math.max(0,outstanding-taken);
+  }
+ }
+ return amounts;
+}
+// Match the orange circular-segment area to the taxed fraction.
+function dotCutPosition(fraction){
+ if(fraction<=0)return 100;if(fraction>=1)return 0;
+ let left=-1,right=1;
+ for(let i=0;i<40;i++){
+  const x=(left+right)/2,area=(Math.acos(x)-x*Math.sqrt(1-x*x))/Math.PI;
+  if(area>fraction)left=x;else right=x;
+ }
+ return 50*(1+(left+right)/2);
+}
+function paintDotTaxes(){
+ document.querySelectorAll('.dots').forEach(grid=>{
+  const tracks=getComputedStyle(grid).gridTemplateColumns.trim().split(/\s+/);
+  const columns=Math.max(1,tracks.length),wealth=Number(grid.dataset.wealth),tax=Number(grid.dataset.tax);
+  const amounts=dotTaxAmounts(wealth,tax,columns);
+  grid.dataset.columns=columns;
+  Array.from(grid.children).forEach((dot,index)=>{
+   const own=Number(dot.dataset.wealth),cut=amounts[index]??0;
+   dot.dataset.tax=cut;
+   dot.classList.toggle('tax',own===1&&cut===1);
+   if(own===1&&(cut===0||cut===1))dot.style.background='';
+   else if(own===1){
+    const boundary=dotCutPosition(cut);
+    dot.style.background='linear-gradient(to right,var(--wealth) 0% '+boundary+'%,var(--tax) '+boundary+'% 100%)';
+   }else dot.style.background='conic-gradient(from '+(90-180*cut)+'deg,var(--tax) 0turn '+cut+'turn,var(--wealth) '+cut+'turn '+own+'turn,transparent '+own+'turn 1turn)';
+  });
+ });
+}
 function renderDots(){
  const rows=rankData.map(d=>{
-  const tax=taxOn(d.wealth),remaining=d.wealth-tax,parts=[];
+  const tax=taxOn(d.wealth),parts=[];
   for(let i=0;i<Math.ceil(d.wealth-1e-12);i++){
-   const own=clamp(d.wealth-i,0,1),rest=clamp(remaining-i,0,own);let cls='dot',style='';
-   if(own===1&&rest===0)cls+=' tax';
-   else if(!(own===1&&rest===1))style=' style="background:conic-gradient(var(--wealth) 0turn '+rest+'turn,var(--tax) '+rest+'turn '+own+'turn,transparent '+own+'turn 1turn)"';
-   parts.push('<i class="'+cls+'"'+style+' data-wealth="'+own+'" data-tax="'+(own-rest)+'" aria-hidden="true"></i>');
+   const own=clamp(d.wealth-i,0,1);
+   parts.push('<i class="dot" data-wealth="'+own+'" data-tax="0" aria-hidden="true"></i>');
   }
   const detail=money(d.wealth)+' · daň '+money(tax)+' ('+fixed(tax/d.wealth*100,1)+' %)',rank=d.displayRank??d.rank;
-  return '<article class="person" data-position="'+d.rank+'"><div class="identity"><div class="meta"><b title="'+esc(d.name)+'"><span class="rank">#'+rank+'</span> '+esc(d.name)+'</b><span class="person-detail" title="'+esc(detail)+'">'+esc(detail)+'</span></div></div><div class="dots" role="img" aria-label="'+esc(d.name+': '+detail)+'">'+parts.join('')+'</div></article>';
+  return '<article class="person" data-position="'+d.rank+'"><div class="identity"><div class="meta"><b title="'+esc(d.name)+'"><span class="rank">#'+rank+'</span> '+esc(d.name)+'</b><span class="person-detail" title="'+esc(detail)+'">'+esc(detail)+'</span></div></div><div class="dots" data-wealth="'+d.wealth+'" data-tax="'+tax+'" role="img" aria-label="'+esc(d.name+': '+detail)+'">'+parts.join('')+'</div></article>';
  });
  $('dotTopTen').innerHTML=rows.slice(0,10).join('');
  $('dotRest').innerHTML=rows.slice(10).join('');
+ paintDotTaxes();
 }
 function renderCalibration(){
  $('alphaInfo').textContent=sources[activeSource].label+': K = '+num(rankData.length,0)+', dolní kotva '+money(CAP)+'; α = '+fixed(ALPHA,6)+'.';
@@ -374,7 +414,17 @@ $('residencyLink').addEventListener('click',()=>{$('methodDetails').open=true;$(
 const extents=[5,10,20,50,100];
 $('rateZoomOut').addEventListener('click',()=>{rateExtent=extents[Math.min(extents.indexOf(rateExtent)+1,extents.length-1)];renderSchedule();});
 $('rateZoomIn').addEventListener('click',()=>{const current=extents.indexOf(rateExtent),next=extents[Math.max(0,current-1)];if(Math.max(...brackets.map(b=>b.r))*100>next){$('rateExtent').textContent='Nejprve snižte sazby pod '+next+' %';return;}rateExtent=next;renderSchedule();});
-let resizeFrame=0;window.addEventListener('resize',()=>{cancelAnimationFrame(resizeFrame);resizeFrame=requestAnimationFrame(()=>{if(model){renderWealth();renderSchedule();}});});
+let resizeFrame=0;window.addEventListener('resize',()=>{cancelAnimationFrame(resizeFrame);resizeFrame=requestAnimationFrame(()=>{if(model){renderWealth();renderSchedule();paintDotTaxes();}});});
+let dotLayoutFrame=0;
+function refreshDotLayout(){
+ if(!dotLayoutFrame)dotLayoutFrame=requestAnimationFrame(()=>{dotLayoutFrame=0;paintDotTaxes();});
+}
+if(typeof ResizeObserver!=='undefined'){
+ const dotLayoutObserver=new ResizeObserver(refreshDotLayout);
+ dotLayoutObserver.observe(document.querySelector('.ranking-list'));
+ dotLayoutObserver.observe($('dotTopTen'));
+}
+if(document.fonts)document.fonts.ready.then(refreshDotLayout);
 // Diagnostics use the same cells as the SVG. Exposed only to enable independent tests.
 window.wealthTaxModel={forbes,euro,euroAll,residencyAudit,selectionAudit,forbesMatches,sources,N,get CAP(){return CAP;},FSD,get ALPHA(){return ALPHA;},INITIAL,BODY_W,BODY_M,bodyCurve,modelMoment,buildDistribution,taxOn,cellTax,surplus,above,calculate,pointAt,thresholdRank,detailX,detailInverse,
  snapshot:()=>({brackets:brackets.map(b=>({...b})),axes:{...axes},scenario:activeScenario,source:activeSource,rateExtent,model,last}),
